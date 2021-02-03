@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <title>Telegram Mapper</title>
+
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css"
+        integrity="sha512-xodZBNTC5n17Xt2atTPuE1HxjVMSvLVW9ocqUKLsCC5CXdbqCmblAshOMAS6/keqq/sMZMZ19scR4PsZChSR7A=="
+        crossorigin=""/>
+
+        <style type="text/css">
+            * {
+                box-sizing: border-box;
+            }
+
+            html, body, #container {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+
+                position: relative;
+            }
+
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+            }
+
+            #map {
+                height: 100%;
+            }
+
+            #ui {
+                background: white;
+                right: 2em;
+                top: 2em;
+                width: 200px;
+                max-height: 300px;
+                overflow-y: auto;
+                padding: 1em;
+                position: absolute;
+                z-index: 1000000;
+                box-shadow: 0px 6px 8px 0px rgba(0, 0, 0, 0.5);
+            }
+
+            #ui, #ui select, #ui input, #ui button {
+                font-size: small;
+            }
+
+            #ui select, #ui button, #ui input[type='number'] {
+                width: 100%;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="container">
+            <div id="map">
+
+            </div>
+            <div id="ui">
+                <label>User
+                <select name="users" id="tg-users"></select>
+                </label>
+                <hr>
+                <b>Query options</b><br>
+                <label>
+                    Max. distance
+                    <input id="tg-distance" type="number" value="500">
+                </label>
+                <label>
+                    Max. accuracy
+                    <input id="tg-accuracy" type="number" value="20">
+                </label>
+                <hr>
+                <b>Render options</b><br>
+                <label>
+                    Max. amount of circles to draw (closest first)
+                    <input id="tg-loc-count" type="number" value="20">
+                </label>
+                <label>
+                    Markers to highlight (closest first)
+                    <input id="tg-close-count" type="number" value="5">
+                </label>
+                <label>
+                    <input id="tg-hide-100" type="checkbox" checked>Hide circles with less than 100m distance<br>
+                </label>
+                <label>
+                    <input id="tg-highlight-100" type="checkbox" checked>Highlight markers with less than 100m distance
+                </label>
+                <button id="tg-update">Update</button>
+            </div>
+        </div>
+
+        <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"
+        integrity="sha512-XQoYMqMTK8LvdxXYG3nZ448hOEQiglfqkJs1NOQV44cWnUrBc8PkAOcXy20w0vlaXaVUearIOBhiXZ5V3ynxwA=="
+        crossorigin=""></script>
+        <script>
+            const $ = document.getElementById.bind(document);
+            const map = L.map("map");
+
+            const makeMarkerIcon = function (name) {
+                return new L.Icon({
+                    iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${name}.png`,
+                    shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                    iconSize: [25, 41],
+                    iconAnchor: [12, 41],
+                    popupAnchor: [1, -34],
+                    shadowSize: [41, 41]
+                });
+            }
+
+            const redIcon = makeMarkerIcon("red");
+            const greyIcon = makeMarkerIcon("grey");
+            const orangeIcon = makeMarkerIcon("orange");
+            const goldIcon = makeMarkerIcon("gold");
+
+            L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+                attribution: "Map data &copy; <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\">OpenStreetMap</a> contributors"
+            }).addTo(map);
+
+            const inputUser = $("tg-users");
+            const inputAccuracy = $("tg-accuracy");
+            const inputHide100 = $("tg-hide-100");
+            const inputHighlight100 = $("tg-highlight-100");
+            const inputClosest = $("tg-close-count");
+            const inputDistance = $("tg-distance");
+            const inputCircleCount = $("tg-loc-count");
+
+            const btnUpdate = $("tg-update");
+
+            const getResource = async function (url) {
+                return (await fetch(url)).json();
+            }
+
+            const serializeLocation = function (loc) {
+                return `${loc.latitude}:${loc.longitude}`;
+            }
+
+            const getOpts = function () {
+                return {
+                    id:             parseInt(inputUser.value),
+                    maxRadius:      parseInt(inputDistance.value) || 500,
+                    maxAccuracy:    parseInt(inputAccuracy.value) || 20,
+                    maxCircleCount: parseInt(inputCircleCount.value) || 20,
+                    closestCircles: parseInt(inputClosest.value) || 5,
+                    hide100:        inputHide100.checked,
+                    highlight100:   inputHighlight100.checked
+                }
+            }
+
+            let locationMarkers = {};
+            let sightMarkers = [];
+            let curQueryResponse = {};
+            let curSights = [];
+
+            const doSightsUpdate = function() {
+                for (let m of sightMarkers) {
+                    m.remove();
+                }
+
+                sightMarkers = [];
+
+                for (let m of Object.values(locationMarkers)) {
+                    m.setIcon(greyIcon);
+                }
+
+                if (curSights.length == 0) {
+                    alert("No sightings with given parameters.");
+                    return;
+                }
+
+                let opts = getOpts();
+                let count = 0;
+
+                for (let s of curSights.sort((a, b) => a.distance - b.distance).slice(0, opts.maxCircleCount)) {
+                    // only draw the n closest circles
+                    if (count < opts.closestCircles) {
+                        locationMarkers[serializeLocation(s)].setIcon(orangeIcon);
+                    }
+
+                    count++;
+
+                    if (s.distance <= 100) {
+                        // mark as red if desired
+                        if (opts.highlight100) {
+                            locationMarkers[serializeLocation(s)].setIcon(redIcon);
+                        }
+
+                        // skip the circle draw part by continuing the loop if desired
+                        if (opts.hide100) {
+                            continue;
+                        }
+                    }
+
+                    let m = L.circle([ s.latitude, s.longitude ], {
+                        radius:     s.distance,
+                        color:      "black",
+                        weight:     1,
+                        opacity:    .5,
+                        //dashArray:  "4",
+                        fill:       false
+                    });
+
+                    sightMarkers.push(m);
+                    m.addTo(map);
+                }
+
+                if (curQueryResponse.guess.success) {
+                    let r = curQueryResponse.guess.result;
+                    let loc = [ r.latitude, r.longitude ];
+
+                    let m = L.marker(loc, { icon: goldIcon });
+                    m.addTo(map);
+                    map.flyTo(loc);
+                    
+                    m.bindPopup(`Estimated location: ${r.latitude.toFixed(6)}°, ${r.longitude.toFixed(6)}°`);
+                    m.openPopup();
+                    sightMarkers.push(m);                    
+                } else {
+                    alert(`No location could be estimated. Reason: ${curQueryResponse.guess.reason}`);
+                }
+            }
+
+            btnUpdate.addEventListener("click", () => {
+                (async () => {
+                    let opts = getOpts();
+
+                    curQueryResponse = await getResource(`/api/query?id=${opts.id}&mdist=${opts.maxRadius}&macc=${opts.maxAccuracy}`);
+                    curSights = curQueryResponse.sightings;
+
+                    doSightsUpdate();
+                })().catch(console.error);
+            });
+
+            //btnUpdate.addEventListener("click", doSightsUpdate);
+
+            (async () => {
+
+                // fetch users
+                const users = await getResource("/api/users");
+
+                for (let user of users.sort((a, b) => a.name.localeCompare(b.name))) {
+                    let el = document.createElement("option");
+                    el.textContent = `${user.name} (${user.sightingCount})`;
+                    el.value = user.id;
+                    
+                    inputUser.options.add(el);
+                }
+
+                // fetch locations
+                const locs = await getResource("/api/locations");
+
+                let minLat = maxLat = locs[0].latitude;
+                let minLng = maxLng = locs[0].longitude;
+
+                for (let loc of locs) {
+                    let l = [ loc.latitude, loc.longitude ];
+
+                    // create location marker
+                    let m = L.marker(l, {
+                        icon: greyIcon
+                    });
+                    m.bindPopup(`Recorded: ${new Date(loc.timestamp).toISOString()}<br>Accuracy: ${loc.accuracy.toFixed(2)}m`);
+                    locationMarkers[serializeLocation(loc)] = m;
+                    m.addTo(map);
+
+                    // create accuracy circle
+                    let b = L.circle(l, {
+                        radius:         loc.accuracy,
+                        color:          "crimson",
+                        weight:         1,
+                        //opacity:        .2,
+                        //dashArray:      "4",
+                        fillColor:      "crimson",
+                        fillOpacity:    .2
+                    });
+                    //locationMarkers.push(b);
+                    b.addTo(map);
+
+                    minLat = Math.min(minLat, l[0]);
+                    maxLat = Math.max(maxLat, l[0]);
+                    minLng = Math.min(minLng, l[1]);
+                    maxLng = Math.max(maxLng, l[1]);
+                }
+
+                map.fitBounds([[ minLat, minLng ], [ maxLat, maxLng ]]);
+
+            })().catch(console.error);
+        </script>
+    </body>
+</html>

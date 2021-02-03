@@ -1,0 +1,6 @@
+.vscode
+venv
+data
+*.sqlite
+*.java
+*.sql

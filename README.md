@@ -8,7 +8,7 @@ If you want to toy with the code in this repository and collect some location da
 
 1. Clone the Telegram Android app source code from the [official repository](https://github.com/DrKLO/Telegram) and follow the outlined steps to creating your own development build.
 2. Apply the [PeopleNearbyActivity patch](PeopleNearbyActivity.patch) to the Java class of the same name.
-3. Install all Python dependencies using `python -m pip install -r requirements.txt`. It is recommended to create a separate virutal environment in the root of this repository first.
+3. Install all Python dependencies using `python -m pip install -r requirements.txt`. It is recommended to create a separate virtual environment in the root of this repository first.
 
 ## Usage
 
